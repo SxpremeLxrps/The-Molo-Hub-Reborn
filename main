@@ -1,48 +1,16 @@
--- [[ SERVICES ]]
-
 local PlayersService: Players = game:GetService("Players")
 local Player: Player = PlayersService.LocalPlayer
 local RunService: RunService = game:GetService("RunService")
-
--- [[ PLAYER GUI ]]
 
 local PlayerGui: PlayerGui = Player:WaitForChild("PlayerGui") :: PlayerGui
 local FFolder: Folder = PlayerGui:WaitForChild("F") :: Folder
 local VarLib: {any} = require(FFolder:WaitForChild("VarLib"))
 
--- [[ HELPERS ]]
-
-local function WaitForDescendant(Parent: Instance, Name: string): Instance
-	local Object: Instance? = Parent:FindFirstChild(Name, true)
-
-	while not Object do
-		Parent.DescendantAdded:Wait()
-		Object = Parent:FindFirstChild(Name, true)
-	end
-
-	return Object
-end
-
-local function GetCamera(): Camera
-	local Camera: Camera? = workspace.CurrentCamera
-
-	while not Camera do
-		RunService.RenderStepped:Wait()
-		Camera = workspace.CurrentCamera
-	end
-
-	return Camera
-end
-
--- [[ UI ]]
-
 local MainScreenGui: ScreenGui = PlayerGui:WaitForChild("gui") :: ScreenGui
 local AmmoFrame: GuiObject = MainScreenGui:WaitForChild("AmmoFrame") :: GuiObject
 
--- [[ AIMBOT CONFIG ]]
-
 local AimbotEnabled: boolean = true
-local AimbotFOV: number = 90
+local AimbotFOV: number = 15
 local AimbotMaxDistance: number = 500
 local AimbotSmoothness: number = 0.2
 local AimbotTargetPart: string = "Head"
@@ -52,75 +20,171 @@ local AimbotTeamCheck: boolean = true
 local AimbotKnockedCheck: boolean = true
 local AimbotPrediction: boolean = true
 local AimbotPredictionAmount: number = 0.15
+
 local FOVCircleEnabled: boolean = true
 local FOVCircleColor: Color3 = Color3.fromRGB(255, 255, 255)
 local FOVCircleThickness: number = 2
 local FOVCircleTransparency: number = 0.5
+
 local FOVCircleDrawing: Drawing? = nil
 
--- [[ FOV CIRCLE ]]
+local function GetFOVCircleRadius(Camera: Camera): number
+	local ViewportSize: Vector2 = Camera.ViewportSize
+	local VerticalFOV: number = math.rad(Camera.FieldOfView)
 
-local function CreateFOVCircle(): void
+	if ViewportSize.Y <= 0 then
+		return 0
+	end
+
+	local HorizontalFOV: number = 2 * math.atan(
+		math.tan(VerticalFOV / 2) *
+			(ViewportSize.X / ViewportSize.Y)
+	)
+
+	local Radius: number =
+		(math.tan(math.rad(AimbotFOV) / 2) /
+			math.tan(HorizontalFOV / 2)) *
+		(ViewportSize.X / 2)
+
+	return Radius
+end
+
+local function CreateFOVCircle(): ()
 	if FOVCircleDrawing then
-		FOVCircleDrawing:Destroy()
+		pcall(function()
+			FOVCircleDrawing:Remove()
+		end)
+
 		FOVCircleDrawing = nil
 	end
 
-	if FOVCircleEnabled then
-		local Camera: Camera = GetCamera()
+	local Camera: Camera? = workspace.CurrentCamera
 
-		FOVCircleDrawing = Drawing.new("Circle")
-		FOVCircleDrawing.Visible = false
-		FOVCircleDrawing.Radius = AimbotFOV * 2
-		FOVCircleDrawing.Thickness = FOVCircleThickness
-		FOVCircleDrawing.Color = FOVCircleColor
-		FOVCircleDrawing.Transparency = FOVCircleTransparency
-		FOVCircleDrawing.NumSides = 64
+	if not Camera then
+		return
+	end
 
-		local ViewportSize: Vector2 = Camera.ViewportSize
+	local ViewportSize: Vector2 = Camera.ViewportSize
 
-		FOVCircleDrawing.Position = Vector2.new(
-			ViewportSize.X / 2,
-			ViewportSize.Y / 2
-		)
+	FOVCircleDrawing = Drawing.new("Circle")
+	FOVCircleDrawing.Visible = FOVCircleEnabled
+	FOVCircleDrawing.Thickness = FOVCircleThickness
+	FOVCircleDrawing.Color = FOVCircleColor
+	FOVCircleDrawing.Transparency = FOVCircleTransparency
+	FOVCircleDrawing.NumSides = 64
+	FOVCircleDrawing.Radius = GetFOVCircleRadius(Camera)
+	FOVCircleDrawing.Position = Vector2.new(
+		ViewportSize.X / 2,
+		ViewportSize.Y / 2
+	)
+end
+
+local Character: Model? = nil
+local Humanoid: Humanoid? = nil
+local RootPart: BasePart? = nil
+
+local CurrentTarget: Player? = nil
+
+local function ResetCharacter(): ()
+	Character = nil
+	Humanoid = nil
+	RootPart = nil
+	CurrentTarget = nil
+end
+
+local function SetupCharacter(NewCharacter: Model): ()
+	ResetCharacter()
+
+	local Success: boolean, ErrorMessage: string? = pcall(function()
+		local NewHumanoid: Humanoid? =
+			NewCharacter:WaitForChild("Humanoid", 5) :: Humanoid?
+
+		local NewRootPart: BasePart? =
+			NewCharacter:WaitForChild("HumanoidRootPart", 5) :: BasePart?
+
+		if not NewHumanoid or not NewRootPart then
+			return
+		end
+
+		Character = NewCharacter
+		Humanoid = NewHumanoid
+		RootPart = NewRootPart
+
+		NewHumanoid.Died:Connect(function()
+			if Character == NewCharacter then
+				CurrentTarget = nil
+				ResetCharacter()
+			end
+		end)
+	end)
+
+	if not Success then
+		warn("Failed to setup character: " .. tostring(ErrorMessage))
+		ResetCharacter()
 	end
 end
 
--- [[ TARGET VALIDATION ]]
+if Player.Character then
+	SetupCharacter(Player.Character)
+end
+
+Player.CharacterAdded:Connect(function(NewCharacter: Model)
+	SetupCharacter(NewCharacter)
+
+	task.wait()
+
+	CreateFOVCircle()
+end)
+
+Player.CharacterRemoving:Connect(function(RemovingCharacter: Model)
+	if Character == RemovingCharacter then
+		CurrentTarget = nil
+		ResetCharacter()
+	end
+end)
 
 local function IsTargetValid(Target: Player): boolean
-	if not Target then
+	if Target == Player then
 		return false
 	end
 
-	local Character: Model? = Target.Character
+	local TargetCharacter: Model? = Target.Character
 
-	if not Character then
+	if not TargetCharacter then
 		return false
 	end
 
-	local Humanoid: Humanoid? = Character:FindFirstChildOfClass("Humanoid")
-	local RootPart: BasePart? = Character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	local TargetHumanoid: Humanoid? =
+		TargetCharacter:FindFirstChildOfClass("Humanoid")
 
-	if not Humanoid or not RootPart then
+	local TargetRoot: BasePart? =
+		TargetCharacter:FindFirstChild("HumanoidRootPart") :: BasePart?
+
+	if not TargetHumanoid or not TargetRoot then
 		return false
 	end
 
-	if Humanoid.Health <= 0 then
+	if TargetHumanoid.Health <= 0 then
 		return false
 	end
 
 	if AimbotTeamCheck then
-		local TargetGroup: number = Target:GetAttribute("group") or 0
-		local MyGroup: number = Player:GetAttribute("group") or 0
+		local TargetGroup: number =
+			(Target:GetAttribute("group") :: number?) or 0
 
-		if TargetGroup ~= 0 and TargetGroup == MyGroup then
+		local MyGroup: number =
+			(Player:GetAttribute("group") :: number?) or 0
+
+		if TargetGroup ~= 0
+			and MyGroup ~= 0
+			and TargetGroup == MyGroup
+		then
 			return false
 		end
 	end
 
 	if AimbotKnockedCheck then
-		if Character:GetAttribute("Knocked") == true then
+		if TargetCharacter:GetAttribute("Knocked") == true then
 			return false
 		end
 	end
@@ -128,22 +192,20 @@ local function IsTargetValid(Target: Player): boolean
 	return true
 end
 
--- [[ TARGET POSITION ]]
-
 local function GetTargetPosition(Target: Player): Vector3?
-	if not Target then
-		return nil
-	end
+	local TargetCharacter: Model? = Target.Character
 
-	local Character: Model? = Target.Character
-
-	if not Character then
+	if not TargetCharacter then
 		return nil
 	end
 
 	local TargetPart: BasePart? =
-		Character:FindFirstChild(AimbotTargetPart) :: BasePart?
-		or Character:FindFirstChild("HumanoidRootPart") :: BasePart?
+		TargetCharacter:FindFirstChild(AimbotTargetPart) :: BasePart?
+
+	if not TargetPart then
+		TargetPart =
+			TargetCharacter:FindFirstChild("HumanoidRootPart") :: BasePart?
+	end
 
 	if not TargetPart then
 		return nil
@@ -152,106 +214,116 @@ local function GetTargetPosition(Target: Player): Vector3?
 	local Position: Vector3 = TargetPart.Position
 
 	if AimbotPrediction then
-		local RootPart: BasePart? =
-			Character:FindFirstChild("HumanoidRootPart") :: BasePart?
+		local TargetRoot: BasePart? =
+			TargetCharacter:FindFirstChild("HumanoidRootPart") :: BasePart?
 
-		if RootPart then
-			Position += RootPart.AssemblyLinearVelocity * AimbotPredictionAmount
+		if TargetRoot then
+			Position +=
+				TargetRoot.AssemblyLinearVelocity *
+				AimbotPredictionAmount
 		end
 	end
 
 	return Position
 end
 
--- [[ VISIBILITY CHECK ]]
-
 local function IsTargetVisible(Target: Player): boolean
 	if not AimbotVisibleCheck then
 		return true
 	end
 
-	if not Target then
-		return false
-	end
-
 	local TargetCharacter: Model? = Target.Character
-	local Character: Model? = Player.Character
 
 	if not TargetCharacter or not Character then
 		return false
 	end
 
-	local Camera: Camera = GetCamera()
-	local CameraPos: Vector3 = Camera.CFrame.Position
-	local TargetPos: Vector3? = GetTargetPosition(Target)
+	local Camera: Camera? = workspace.CurrentCamera
 
-	if not TargetPos then
+	if not Camera then
 		return false
 	end
 
-	local Offset: Vector3 = TargetPos - CameraPos
+	local TargetPosition: Vector3? = GetTargetPosition(Target)
+
+	if not TargetPosition then
+		return false
+	end
+
+	local CameraPosition: Vector3 = Camera.CFrame.Position
+	local Offset: Vector3 = TargetPosition - CameraPosition
 	local Distance: number = Offset.Magnitude
 
 	if Distance <= 0 then
 		return true
 	end
 
-	local Direction: Vector3 = Offset.Unit
-
 	local RaycastParams: RaycastParams = RaycastParams.new()
+
 	RaycastParams.FilterType = Enum.RaycastFilterType.Exclude
 	RaycastParams.FilterDescendantsInstances = {
-		Character,
-		TargetCharacter
+		Character
 	}
 
 	local RaycastResult: RaycastResult? =
 		workspace:Raycast(
-			CameraPos,
-			Direction * Distance,
+			CameraPosition,
+			Offset,
 			RaycastParams
 		)
 
-	return RaycastResult == nil
+	if not RaycastResult then
+		return true
+	end
+
+	return RaycastResult.Instance:IsDescendantOf(TargetCharacter)
 end
 
--- [[ TARGET SCORE ]]
-
 local function GetTargetScore(Target: Player): number
-	local Character: Model? = Target.Character
+	local TargetCharacter: Model? = Target.Character
 
-	if not Character then
+	if not TargetCharacter then
 		return math.huge
 	end
 
-	local RootPart: BasePart? =
-		Character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	local TargetPart: BasePart? =
+		TargetCharacter:FindFirstChild(AimbotTargetPart) :: BasePart?
 
-	local Humanoid: Humanoid? =
-		Character:FindFirstChildOfClass("Humanoid")
+	if not TargetPart then
+		TargetPart =
+			TargetCharacter:FindFirstChild("HumanoidRootPart") :: BasePart?
+	end
 
-	if not RootPart or not Humanoid then
+	local TargetHumanoid: Humanoid? =
+		TargetCharacter:FindFirstChildOfClass("Humanoid")
+
+	local Camera: Camera? = workspace.CurrentCamera
+
+	if not TargetPart or not TargetHumanoid or not Camera then
 		return math.huge
 	end
 
-	local Camera: Camera = GetCamera()
-	local CameraPos: Vector3 = Camera.CFrame.Position
-	local TargetPos: Vector3 = RootPart.Position
-	local Distance: number = (CameraPos - TargetPos).Magnitude
+	local CameraPosition: Vector3 = Camera.CFrame.Position
+	local TargetPosition: Vector3 = TargetPart.Position
 
 	if AimbotPriority == "Closest" then
-		return Distance
-	elseif AimbotPriority == "LowestHealth" then
-		return Humanoid.Health
-	elseif AimbotPriority == "Crosshair" then
+		return (CameraPosition - TargetPosition).Magnitude
+	end
+
+	if AimbotPriority == "LowestHealth" then
+		return TargetHumanoid.Health
+	end
+
+	if AimbotPriority == "Crosshair" then
 		local CameraDirection: Vector3 = Camera.CFrame.LookVector
-		local Offset: Vector3 = TargetPos - CameraPos
+		local Offset: Vector3 = TargetPosition - CameraPosition
 
 		if Offset.Magnitude <= 0 then
 			return 0
 		end
 
 		local ToTarget: Vector3 = Offset.Unit
+
 		local Dot: number = math.clamp(
 			CameraDirection:Dot(ToTarget),
 			-1,
@@ -261,59 +333,59 @@ local function GetTargetScore(Target: Player): number
 		return math.deg(math.acos(Dot))
 	end
 
-	return Distance
+	return (CameraPosition - TargetPosition).Magnitude
 end
 
--- [[ TARGET SELECTION ]]
-
 local function GetClosestTarget(): Player?
-	local ClosestTarget: Player? = nil
-	local ClosestScore: number = math.huge
-
-	local Character: Model? = Player.Character
-
-	if not Character then
+	if not Character or not RootPart then
 		return nil
 	end
 
-	local Camera: Camera = GetCamera()
-	local CameraPos: Vector3 = Camera.CFrame.Position
+	local Camera: Camera? = workspace.CurrentCamera
+
+	if not Camera then
+		return nil
+	end
+
+	local ClosestTarget: Player? = nil
+	local ClosestScore: number = math.huge
+
+	local CameraPosition: Vector3 = Camera.CFrame.Position
 	local CameraDirection: Vector3 = Camera.CFrame.LookVector
 
 	for _, OtherPlayer: Player in ipairs(PlayersService:GetPlayers()) do
-		if OtherPlayer ~= Player and IsTargetValid(OtherPlayer) then
-			local TargetCharacter: Model? = OtherPlayer.Character
+		if IsTargetValid(OtherPlayer) then
+			local TargetPosition: Vector3? =
+				GetTargetPosition(OtherPlayer)
 
-			if TargetCharacter then
-				local TargetRoot: BasePart? =
-					TargetCharacter:FindFirstChild("HumanoidRootPart") :: BasePart?
+			if TargetPosition then
+				local Offset: Vector3 =
+					TargetPosition - CameraPosition
 
-				if TargetRoot then
-					local TargetPos: Vector3 = TargetRoot.Position
-					local Offset: Vector3 = TargetPos - CameraPos
-					local Distance: number = Offset.Magnitude
+				local Distance: number = Offset.Magnitude
 
-					if Distance <= AimbotMaxDistance and Distance > 0 then
-						local ToTarget: Vector3 = Offset.Unit
+				if Distance > 0
+					and Distance <= AimbotMaxDistance
+				then
+					local ToTarget: Vector3 = Offset.Unit
 
-						local Dot: number = math.clamp(
-							CameraDirection:Dot(ToTarget),
-							-1,
-							1
-						)
+					local Dot: number = math.clamp(
+						CameraDirection:Dot(ToTarget),
+						-1,
+						1
+					)
 
-						local Angle: number =
-							math.deg(math.acos(Dot))
+					local Angle: number =
+						math.deg(math.acos(Dot))
 
-						if Angle <= AimbotFOV then
-							if IsTargetVisible(OtherPlayer) then
-								local Score: number =
-									GetTargetScore(OtherPlayer)
+					if Angle <= AimbotFOV then
+						if IsTargetVisible(OtherPlayer) then
+							local Score: number =
+								GetTargetScore(OtherPlayer)
 
-								if Score < ClosestScore then
-									ClosestScore = Score
-									ClosestTarget = OtherPlayer
-								end
+							if Score < ClosestScore then
+								ClosestScore = Score
+								ClosestTarget = OtherPlayer
 							end
 						end
 					end
@@ -325,100 +397,157 @@ local function GetClosestTarget(): Player?
 	return ClosestTarget
 end
 
--- [[ AIM AT TARGET ]]
-
-local function AimAtTarget(Target: Player): void
-	if not Target then
-		return
+local function IsTargetStillValid(Target: Player): boolean
+	if not IsTargetValid(Target) then
+		return false
 	end
 
-	local TargetPos: Vector3? = GetTargetPosition(Target)
+	local Camera: Camera? = workspace.CurrentCamera
 
-	if not TargetPos then
-		return
+	if not Camera then
+		return false
 	end
 
-	local Camera: Camera = GetCamera()
-	local CurrentPos: Vector3 = Camera.CFrame.Position
+	local TargetPosition: Vector3? =
+		GetTargetPosition(Target)
 
-	local NewCFrame: CFrame =
-		CFrame.lookAt(CurrentPos, TargetPos)
+	if not TargetPosition then
+		return false
+	end
 
-	local CurrentCFrame: CFrame = Camera.CFrame
+	local CameraPosition: Vector3 =
+		Camera.CFrame.Position
 
-	local SmoothedCFrame: CFrame =
-		CurrentCFrame:Lerp(
-			NewCFrame,
-			AimbotSmoothness
-		)
+	local CameraDirection: Vector3 =
+		Camera.CFrame.LookVector
 
-	Camera.CFrame = SmoothedCFrame
+	local Offset: Vector3 =
+		TargetPosition - CameraPosition
+
+	local Distance: number =
+		Offset.Magnitude
+
+	if Distance <= 0
+		or Distance > AimbotMaxDistance
+	then
+		return false
+	end
+
+	local ToTarget: Vector3 = Offset.Unit
+
+	local Dot: number = math.clamp(
+		CameraDirection:Dot(ToTarget),
+		-1,
+		1
+	)
+
+	local Angle: number =
+		math.deg(math.acos(Dot))
+
+	if Angle > AimbotFOV then
+		return false
+	end
+
+	if not IsTargetVisible(Target) then
+		return false
+	end
+
+	return true
 end
 
--- [[ INITIALIZE ]]
+local function AimAtTarget(Target: Player): ()
+	local TargetPosition: Vector3? =
+		GetTargetPosition(Target)
+
+	if not TargetPosition then
+		return
+	end
+
+	local Camera: Camera? = workspace.CurrentCamera
+
+	if not Camera then
+		return
+	end
+
+	local CurrentPosition: Vector3 =
+		Camera.CFrame.Position
+
+	local TargetCFrame: CFrame =
+		CFrame.lookAt(
+			CurrentPosition,
+			TargetPosition
+		)
+
+	Camera.CFrame =
+		Camera.CFrame:Lerp(
+			TargetCFrame,
+			math.clamp(AimbotSmoothness, 0, 1)
+		)
+end
 
 CreateFOVCircle()
 
--- [[ RENDER LOOP ]]
+RunService.RenderStepped:Connect(function(_DeltaTime: number): ()
+	local Camera: Camera? = workspace.CurrentCamera
 
-RunService.RenderStepped:Connect(function(_DeltaTime: number): void
-	local Camera: Camera = GetCamera()
-	local ViewportSize: Vector2 = Camera.ViewportSize
+	if FOVCircleDrawing and Camera then
+		local ViewportSize: Vector2 =
+			Camera.ViewportSize
 
-	if FOVCircleEnabled and FOVCircleDrawing then
 		FOVCircleDrawing.Position = Vector2.new(
 			ViewportSize.X / 2,
 			ViewportSize.Y / 2
 		)
 
-		FOVCircleDrawing.Radius = AimbotFOV * 2
-		FOVCircleDrawing.Visible = AmmoFrame.Visible
+		FOVCircleDrawing.Radius =
+			GetFOVCircleRadius(Camera)
+
+		FOVCircleDrawing.Visible =
+			FOVCircleEnabled
 	end
 
-	local Backpack = VarLib.backpack
-
-	if AimbotEnabled
-		and AmmoFrame.Visible
-		and Backpack
-		and Backpack:GetAttribute("IsGunFireable") == true
-	then
-		local Target: Player? = GetClosestTarget()
-
-		if Target then
-			AimAtTarget(Target)
+	if CurrentTarget then
+		if not IsTargetStillValid(CurrentTarget) then
+			CurrentTarget = nil
 		end
+	end
+
+	local Backpack: {any}? = VarLib.backpack
+
+	local CanAim: boolean =
+		AimbotEnabled
+		and AmmoFrame.Visible
+		and Backpack ~= nil
+		and Backpack:GetAttribute("IsGunFireable") == true
+		and Character ~= nil
+		and Humanoid ~= nil
+		and RootPart ~= nil
+		and Humanoid.Health > 0
+
+	if not CanAim then
+		CurrentTarget = nil
+		return
+	end
+
+	if not CurrentTarget then
+		CurrentTarget = GetClosestTarget()
+	end
+
+	if CurrentTarget then
+		AimAtTarget(CurrentTarget)
 	end
 end)
 
--- [[ INPUT ]]
-
-VarLib.user.InputBegan:Connect(function(Input: InputObject): void
+VarLib.user.InputBegan:Connect(function(Input: InputObject): ()
 	if Input.KeyCode == Enum.KeyCode.F then
 		AimbotEnabled = not AimbotEnabled
+		CurrentTarget = nil
 
 	elseif Input.KeyCode == Enum.KeyCode.H then
 		FOVCircleEnabled = not FOVCircleEnabled
-		CreateFOVCircle()
+
+		if FOVCircleDrawing then
+			FOVCircleDrawing.Visible = FOVCircleEnabled
+		end
 	end
-end)
-
-
--- [[ CHARACTER ]] 
-
-local Character: Model? = nil
-local Humanoid: Humanoid? = nil
-
-local function SetupCharacter(NewCharacter: Model): ()
-	Character = NewCharacter
-	Humanoid = NewCharacter:WaitForChild("Humanoid") :: Humanoid
-	NewCharacter:WaitForChild("HumanoidRootPart")
-	NewCharacter:WaitForChild("bodyvalues")
-end
-
-if Player.Character then
-	SetupCharacter(Player.Character)
-end
-
-Player.CharacterAdded:Connect(function(NewCharacter: Model)
-	SetupCharacter(NewCharacter)
 end)
